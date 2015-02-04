@@ -1,13 +1,20 @@
 package simplehttpclient;
 
+import java.io.BufferedWriter;
+import java.io.File;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
 import java.io.IOException;
+import java.io.OutputStreamWriter;
 import java.net.InetSocketAddress;
 import java.net.StandardSocketOptions;
+import java.net.URL;
 import java.net.UnknownHostException;
 import java.nio.ByteBuffer;
 import java.nio.channels.SelectionKey;
 import java.nio.channels.Selector;
 import java.nio.channels.SocketChannel;
+import java.util.Arrays;
 import java.util.Iterator;
 import java.util.List;
 import java.util.Set;
@@ -16,6 +23,7 @@ import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeUnit;
 import java.util.concurrent.atomic.AtomicBoolean;
 
 import org.apache.logging.log4j.LogManager;
@@ -86,7 +94,7 @@ public class SimpleHttpClient {
 				latch.countDown();
 				while (flag) {
 					try {
-						selector.select();
+						selector.select(1000);
 						Set<SelectionKey> keys = selector.selectedKeys();
 						if (keys.size() == 0) {
 							continue;
@@ -135,7 +143,7 @@ public class SimpleHttpClient {
 							it.remove();
 						}
 					} catch (Exception e) {
-						e.printStackTrace();
+						logger.error("network exception", e);
 					}
 				}
 			}
@@ -146,41 +154,83 @@ public class SimpleHttpClient {
 	public static void main(String[] args) throws UnknownHostException,
 			IOException, InterruptedException, ExecutionException {
 		SimpleHttpClient hc = new SimpleHttpClient();
-		String[] hosts = new String[] { "www.baidu.com", "www.zhihu.com",
-				"www.sina.com.cn", "nba.hupu.com" };
-		SimpleFutrue[] futrues = new SimpleFutrue[hosts.length];
-		int i = 0;
+		String[] hosts = new String[] {"http://www.youku.com","http://tv.sohu.com/","http://v.qq.com/","http://www.iqiyi.com/" };
+		LinkedBlockingQueue<String> urlQueue = new LinkedBlockingQueue<String>();
+		urlQueue.addAll(Arrays.asList(hosts));
 		final LinkedBlockingQueue<SimpleResponse> parseQueue = new LinkedBlockingQueue<SimpleResponse>(
 				20);
-
+		final LinkedBlockingQueue<SimpleKeyWords> resultQueue = new LinkedBlockingQueue<SimpleKeyWords>();
 		ExecutorService exService = Executors.newCachedThreadPool();
 
 		for (int j = 0; j < 3; j++) {
-			SimpleParseWorker worker = new SimpleParseWorker(parseQueue, null);
+			SimpleParseWorker worker = new SimpleParseWorker(parseQueue,
+					urlQueue, resultQueue);
 			exService.execute(worker);
 		}
 
-		for (String string : hosts) {
-			SimpleFutrue result = hc.execute(string, "/", new SimpleCallback() {
+		new Thread(new Runnable() {
+			@Override
+			public void run() {
+				SimpleKeyWords kw;
+				try {
+					int i = 0;
+					File urltitle = new File("h:/urltitle.txt");
+					FileOutputStream out = new FileOutputStream(urltitle);
+					BufferedWriter writer = new BufferedWriter(
+							new OutputStreamWriter(out));
+					while (i < 100) {
+						kw = resultQueue.poll(10, TimeUnit.SECONDS);
+						if (kw == null) {
+							continue;
+						}
+						writer.append(kw.getUrl() + '\t' + kw.getTitle()
+								+ "\r\n");
+						i++;
+						if (i % 100 == 0) {
+							writer.flush();
+						}
+					}
+					writer.close();
+				} catch (InterruptedException e) {
+					logger.error("poll keyword eror:", e);
+				} catch (FileNotFoundException e) {
+					logger.error("file not found", e);
+				} catch (IOException e) {
+					logger.error("io error", e);
+				}
+			}
+		}).start();
+
+		int i = 0;
+		while (i < 500) {
+			String urlStr = urlQueue.poll(10, TimeUnit.SECONDS);
+			if (urlStr == null) {
+				continue;
+			}
+			i++;
+			URL next = new URL(urlStr);
+			String path = next.getPath();
+			if ("".equals(path)) {
+				path = "/";
+			}
+			hc.execute(next.getHost(), path, new SimpleCallback() {
 				@Override
 				public void getResponse(SimpleGet get, SimpleResponse res) {
-					System.out.println(get.getHost());
 					parseQueue.offer(res);
-					System.out.println();
 				}
 			});
-			futrues[i] = result;
-			i++;
+			if (i % 10 == 0) {
+				Thread.sleep(5000);
+			}
 		}
-		for (int j = 0; j < futrues.length; j++) {
-			futrues[j].get();
-		}
-		hc.stop();
+
 		System.out.println("shutting down!");
+		hc.stop();
 		List<Runnable> runners = exService.shutdownNow();
 		for (Runnable runner : runners) {
 			SimpleParseWorker worker = (SimpleParseWorker) runner;
 			worker.stop();
 		}
 	}
+
 }

@@ -253,7 +253,7 @@ public class SimpleResponse {
 
 	public String getCharset() {
 		String contentType = getHeader("Content-Type");
-		String charSet = "utf-8";
+		String charSet = "gbk";
 		if(contentType == null){
 			return charSet;
 		}
